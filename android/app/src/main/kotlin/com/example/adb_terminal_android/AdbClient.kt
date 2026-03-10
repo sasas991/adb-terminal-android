@@ -2,18 +2,23 @@ package com.example.adb_terminal_android
 
 import android.util.Base64
 import java.io.DataInputStream
+import java.io.File
 import java.io.OutputStream
 import java.math.BigInteger
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
 import java.security.Signature
+import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.RSAPublicKeySpec
 import java.util.zip.CRC32
 
-class AdbClient {
+class AdbClient(private val keyFile: File? = null) {
 
     companion object {
         private const val CMD_CNXN = 0x4E584E43
@@ -40,11 +45,20 @@ class AdbClient {
     private var localIdCounter = 1
 
     init {
-        val gen = KeyPairGenerator.getInstance("RSA")
-        gen.initialize(2048)
-        val kp = gen.generateKeyPair()
-        privateKey  = kp.private
-        rsaPublicKey = kp.public as RSAPublicKey
+        val kf = KeyFactory.getInstance("RSA")
+        if (keyFile != null && keyFile.exists()) {
+            // Load persisted private key (PKCS#8) and derive the public key from it
+            val privKey = kf.generatePrivate(PKCS8EncodedKeySpec(keyFile.readBytes())) as RSAPrivateCrtKey
+            privateKey   = privKey
+            rsaPublicKey = kf.generatePublic(RSAPublicKeySpec(privKey.modulus, privKey.publicExponent)) as RSAPublicKey
+        } else {
+            val gen = KeyPairGenerator.getInstance("RSA")
+            gen.initialize(2048)
+            val kp = gen.generateKeyPair()
+            privateKey   = kp.private
+            rsaPublicKey = kp.public as RSAPublicKey
+            keyFile?.writeBytes(privateKey.encoded)   // persist PKCS#8 bytes
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
