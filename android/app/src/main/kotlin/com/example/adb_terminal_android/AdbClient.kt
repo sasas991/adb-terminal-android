@@ -32,7 +32,7 @@ class AdbClient {
     }
 
     private val privateKey: PrivateKey
-    private val publicKey: RSAPublicKey
+    private val rsaPublicKey: RSAPublicKey
 
     private var socket: Socket? = null
     private var inp: DataInputStream? = null
@@ -43,8 +43,8 @@ class AdbClient {
         val gen = KeyPairGenerator.getInstance("RSA")
         gen.initialize(2048)
         val kp = gen.generateKeyPair()
-        privateKey = kp.private
-        publicKey  = kp.public as RSAPublicKey
+        privateKey  = kp.private
+        rsaPublicKey = kp.public as RSAPublicKey
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -56,6 +56,7 @@ class AdbClient {
         socket = s
         inp = DataInputStream(s.getInputStream())
         out = s.getOutputStream()
+        localIdCounter = 1
 
         sendMessage(CMD_CNXN, ADB_VERSION, MAX_DATA, "host::".toByteArray())
 
@@ -71,50 +72,74 @@ class AdbClient {
                         sendMessage(CMD_AUTH, AUTH_SIGNATURE, 0, signToken(msg.data))
                         triedSignature = true
                     } else {
-                        // key not recognized — send public key, user must tap "Allow" on device
+                        // Key not recognized — send public key, user must tap "Allow" on device
                         sendMessage(CMD_AUTH, AUTH_RSAPUBLICKEY, 0, encodePublicKey())
                     }
                 }
 
-                else -> throw Exception("Unexpected message during handshake: 0x${msg.command.toString(16)}")
+                // Some devices echo our CNXN before sending AUTH — safe to ignore
+                else -> {}
             }
         }
     }
 
     @Throws(Exception::class)
     fun shell(command: String): String {
-        val s = socket ?: throw Exception("Not connected")
-        s.soTimeout = 30_000
+        socket?.soTimeout = 30_000
 
         val localId = localIdCounter++
-        sendMessage(CMD_OPEN, localId, 0, "shell:$command\u0000".toByteArray())
+        sendMessage(CMD_OPEN, localId, 0, "shell:$command\u0000".toByteArray(Charsets.UTF_8))
 
-        // Wait for device to acknowledge the stream
-        var remoteId = 0
-        loop@ while (true) {
-            val msg = readMessage()
-            when (msg.command) {
-                CMD_OKAY -> { remoteId = msg.arg0; break@loop }
-                CMD_CLSE -> throw Exception("Device closed stream before sending data")
-                else -> {}
-            }
-        }
+        val sb     = StringBuilder()
+        var remoteId  = 0
+        var streamOpen = false   // true once we've received OKAY or first WRTE
 
-        // Collect output until CLSE
-        val sb = StringBuilder()
         while (true) {
             val msg = readMessage()
+
+            // Helper: does this message belong to our stream?
+            // Before OKAY we match by arg1 (our localId echoed back by device).
+            // After OKAY we also accept by remoteId.
+            fun isOurs(): Boolean =
+                msg.arg1 == localId || (remoteId != 0 && msg.arg0 == remoteId)
+
             when (msg.command) {
+                CMD_OKAY -> {
+                    if (isOurs()) {
+                        remoteId   = msg.arg0
+                        streamOpen = true
+                    }
+                    // else: stale OKAY from another stream — ignore
+                }
+
                 CMD_WRTE -> {
-                    sb.append(String(msg.data, Charsets.UTF_8))
-                    sendMessage(CMD_OKAY, localId, remoteId, ByteArray(0))
+                    if (isOurs()) {
+                        if (!streamOpen) {
+                            // Device skipped OKAY (non-standard but seen in the wild)
+                            remoteId   = msg.arg0
+                            streamOpen = true
+                        }
+                        sb.append(String(msg.data, Charsets.UTF_8))
+                        sendMessage(CMD_OKAY, localId, remoteId, ByteArray(0))
+                    }
                 }
+
                 CMD_CLSE -> {
-                    sendMessage(CMD_CLSE, localId, remoteId, ByteArray(0))
-                    break
+                    if (isOurs()) {
+                        if (streamOpen) {
+                            // Normal close — send our CLSE and finish
+                            sendMessage(CMD_CLSE, localId, remoteId, ByteArray(0))
+                        } else {
+                            // Stream rejected before it opened (service unavailable / SELinux)
+                            throw Exception("Service 'shell' rejected by device (CLSE before OKAY)")
+                        }
+                        break
+                    }
+                    // else: stale CLSE from another stream — ignore
                 }
-                CMD_OKAY -> {}
-                else -> break
+
+                // Ignore all other message types
+                else -> {}
             }
         }
 
@@ -134,7 +159,7 @@ class AdbClient {
 
     private fun readMessage(): Msg {
         val i = inp ?: throw Exception("Not connected")
-        fun le() = Integer.reverseBytes(i.readInt())   // big-endian → little-endian
+        fun le() = Integer.reverseBytes(i.readInt())
 
         val cmd    = le()
         val arg0   = le()
@@ -143,19 +168,16 @@ class AdbClient {
         le()    // crc32  (ignored)
         le()    // magic  (ignored)
 
-        val data = ByteArray(length)
-        if (length > 0) i.readFully(data)
+        val data = ByteArray(length.coerceIn(0, MAX_DATA))
+        if (data.isNotEmpty()) i.readFully(data)
         return Msg(cmd, arg0, arg1, data)
     }
 
     private fun sendMessage(command: Int, arg0: Int, arg1: Int, data: ByteArray) {
         val o = out ?: throw Exception("Not connected")
-        val crc   = crc32(data)
-        val magic = command.xor(-1)
-
         val buf = ByteBuffer.allocate(24 + data.size).order(ByteOrder.LITTLE_ENDIAN)
-        buf.putInt(command); buf.putInt(arg0); buf.putInt(arg1)
-        buf.putInt(data.size); buf.putInt(crc); buf.putInt(magic)
+        buf.putInt(command); buf.putInt(arg0);  buf.putInt(arg1)
+        buf.putInt(data.size); buf.putInt(crc32(data)); buf.putInt(command.xor(-1))
         buf.put(data)
         o.write(buf.array())
         o.flush()
@@ -171,32 +193,28 @@ class AdbClient {
     }
 
     /**
-     * Encode the RSA public key in ADB's binary format, then Base64 + " user@host\0".
+     * ADB RSA public key binary format (little-endian):
+     *   uint32  len        = 64  (2048 / 32)
+     *   uint32  n0inv      = -(n^{-1}) mod 2^32
+     *   uint32  n[64]      = modulus in LE 32-bit words
+     *   uint32  rr[64]     = (2^2048)^2 mod n  in LE 32-bit words
+     *   uint32  exponent   = e
      *
-     * ADB key struct (little-endian):
-     *   uint32  len        – key length in 32-bit words (64 for 2048-bit)
-     *   uint32  n0inv      – -n^{-1} mod 2^32
-     *   uint32  n[64]      – modulus, LE 32-bit words
-     *   uint32  rr[64]     – (2^2048)^2 mod n, LE 32-bit words
-     *   uint32  exponent   – e (65537)
+     * Then Base64-encoded and " user@android\0" appended.
      */
     private fun encodePublicKey(): ByteArray {
-        val keyLen = 64  // 2048-bit / 32 = 64 words
-        val n = publicKey.modulus
-        val e = publicKey.publicExponent.toInt()
+        val keyLen = 64
+        val n = rsaPublicKey.modulus
+        val e = rsaPublicKey.publicExponent.toInt()
 
-        val pow32   = BigInteger.ONE.shiftLeft(32)
-        val n0inv   = n.modInverse(pow32).negate().mod(pow32).toInt()
+        val pow32 = BigInteger.ONE.shiftLeft(32)
+        val n0inv = n.modInverse(pow32).negate().mod(pow32).toInt()
+        val r     = BigInteger.ONE.shiftLeft(32 * keyLen)
+        val rr    = r.multiply(r).mod(n)
 
-        val r  = BigInteger.ONE.shiftLeft(32 * keyLen)
-        val rr = r.multiply(r).mod(n)
-
-        fun leWords(v: BigInteger): IntArray {
-            val words = IntArray(keyLen)
-            var rem   = v
-            val mask  = BigInteger.valueOf(0xFFFFFFFFL)
+        fun leWords(v: BigInteger) = IntArray(keyLen).also { words ->
+            var rem = v; val mask = BigInteger.valueOf(0xFFFFFFFFL)
             for (i in 0 until keyLen) { words[i] = rem.and(mask).toInt(); rem = rem.shiftRight(32) }
-            return words
         }
 
         val buf = ByteBuffer.allocate(4 + 4 + keyLen * 4 + keyLen * 4 + 4).order(ByteOrder.LITTLE_ENDIAN)
