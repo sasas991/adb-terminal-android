@@ -1,26 +1,26 @@
 package com.example.adb_terminal_android
 
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.io.DataInputStream
-import java.io.File
 import java.io.OutputStream
 import java.math.BigInteger
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.security.KeyFactory
 import java.security.KeyPairGenerator
+import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.Signature
-import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.RSAPublicKeySpec
 import java.util.zip.CRC32
 
-class AdbClient(private val keyFile: File? = null) {
+class AdbClient {
 
     companion object {
+        private const val KEY_ALIAS = "adb_terminal_rsa"
+
         private const val CMD_CNXN = 0x4E584E43
         private const val CMD_AUTH = 0x48545541
         private const val CMD_OPEN = 0x4E45504F
@@ -45,20 +45,19 @@ class AdbClient(private val keyFile: File? = null) {
     private var localIdCounter = 1
 
     init {
-        val kf = KeyFactory.getInstance("RSA")
-        if (keyFile != null && keyFile.exists()) {
-            // Load persisted private key (PKCS#8) and derive the public key from it
-            val privKey = kf.generatePrivate(PKCS8EncodedKeySpec(keyFile.readBytes())) as RSAPrivateCrtKey
-            privateKey   = privKey
-            rsaPublicKey = kf.generatePublic(RSAPublicKeySpec(privKey.modulus, privKey.publicExponent)) as RSAPublicKey
-        } else {
-            val gen = KeyPairGenerator.getInstance("RSA")
-            gen.initialize(2048)
-            val kp = gen.generateKeyPair()
-            privateKey   = kp.private
-            rsaPublicKey = kp.public as RSAPublicKey
-            keyFile?.writeBytes(privateKey.encoded)   // persist PKCS#8 bytes
+        val ks = KeyStore.getInstance("AndroidKeyStore").also { it.load(null) }
+        if (!ks.containsAlias(KEY_ALIAS)) {
+            val spec = KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_SIGN)
+                .setKeySize(2048)
+                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                .setDigests(KeyProperties.DIGEST_SHA1, KeyProperties.DIGEST_SHA256)
+                .build()
+            KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore")
+                .also { it.initialize(spec) }
+                .generateKeyPair()
         }
+        privateKey   = ks.getKey(KEY_ALIAS, null) as PrivateKey
+        rsaPublicKey = ks.getCertificate(KEY_ALIAS).publicKey as RSAPublicKey
     }
 
     // ── Public API ────────────────────────────────────────────────────────────

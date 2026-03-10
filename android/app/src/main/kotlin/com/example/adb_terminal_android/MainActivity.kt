@@ -1,7 +1,6 @@
 package com.example.adb_terminal_android
 
 import io.flutter.embedding.android.FlutterActivity
-import java.io.File
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -11,7 +10,7 @@ class MainActivity : FlutterActivity() {
         const val CHANNEL = "adb_terminal"
     }
 
-    private val adb by lazy { AdbClient(keyFile = File(filesDir, "adb_key.pk8")) }
+    private val adb by lazy { AdbClient() }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
