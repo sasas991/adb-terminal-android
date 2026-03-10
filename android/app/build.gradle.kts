@@ -43,6 +43,3 @@ flutter {
     source = "../.."
 }
 
-dependencies {
-    implementation("com.mobile-dev-inc:dadb:1.2.7")
-}
