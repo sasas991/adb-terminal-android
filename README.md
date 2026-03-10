@@ -20,4 +20,4 @@ flutter run
 ## Limitations
 
 - No streaming commands (`logcat`, `top`) — 30s timeout
-- No interactive shell or file transfer
+- No interactive shell or file transfer (yet)
