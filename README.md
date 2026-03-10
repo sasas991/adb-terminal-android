@@ -1,17 +1,23 @@
-# adb_terminal_android
+# ADB Terminal
 
-A new Flutter project.
+Android app that connects to remote Android devices over ADB/TCP and runs shell commands — no PC needed.
 
-## Getting Started
+Implements the ADB wire protocol natively in Kotlin using Android KeyStore for persistent RSA auth.
 
-This project is a starting point for a Flutter application.
+## Requirements
 
-A few resources to get you started if this is your first Flutter project:
+- Android 6.0+ (API 23) on both devices
+- Target device with ADB over Wi-Fi enabled (`adb tcpip 5555`)
+- Same Wi-Fi network
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Build
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter pub get
+flutter run
+```
+
+## Limitations
+
+- No streaming commands (`logcat`, `top`) — 30s timeout
+- No interactive shell or file transfer
