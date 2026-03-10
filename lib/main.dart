@@ -56,7 +56,6 @@ class _TerminalScreenState extends State<TerminalScreen> {
   final _scrollCtrl = ScrollController();
   final _cmdFocus = FocusNode();
 
-  String? _adbPath;
   String _device = '';
   bool _connected = false;
   bool _busy = false;
@@ -67,7 +66,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void initState() {
     super.initState();
-    _initAdb();
+    _addLine('ADB Terminal готов. Введите IP и нажмите "Подключить".', LineType.info);
+    _addLine('На целевом устройстве должен быть включён ADB по Wi-Fi (порт 5555).', LineType.info);
   }
 
   @override
@@ -80,20 +80,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
     super.dispose();
   }
 
-  Future<void> _initAdb() async {
-    try {
-      final path = await _channel.invokeMethod<String>('getAdbPath');
-      setState(() => _adbPath = path);
-      _addLine('ADB binary: $path', LineType.info);
-      _addLine('Введите IP устройства и нажмите "Подключить"', LineType.info);
-    } catch (e) {
-      _addLine('Ошибка инициализации ADB: $e', LineType.error);
-    }
-  }
-
   void _addLine(String text, LineType type) {
     setState(() {
-      // Split long output into lines
       for (final line in text.split('\n')) {
         _lines.add(TerminalLine(line, type));
       }
@@ -110,27 +98,28 @@ class _TerminalScreenState extends State<TerminalScreen> {
   }
 
   Future<void> _connect() async {
-    if (_busy || _adbPath == null) return;
+    if (_busy) return;
     final host = _hostCtrl.text.trim();
-    final port = _portCtrl.text.trim();
+    final port = int.tryParse(_portCtrl.text.trim()) ?? 5555;
     if (host.isEmpty) return;
-    final target = '$host:$port';
 
     setState(() => _busy = true);
-    _addLine('adb connect $target', LineType.command);
+    _addLine('Подключение к $host:$port...', LineType.info);
 
     try {
-      final out = await _channel.invokeMethod<String>('execute', {
-        'args': ['connect', target],
+      final out = await _channel.invokeMethod<String>('connect', {
+        'host': host,
+        'port': port,
       });
-      final output = out ?? '';
-      _addLine(output, LineType.output);
+      _addLine(out ?? '', LineType.output);
       setState(() {
-        _connected = output.toLowerCase().contains('connected');
-        _device = _connected ? target : '';
+        _connected = true;
+        _device = '$host:$port';
       });
-    } catch (e) {
-      _addLine('$e', LineType.error);
+      _cmdFocus.requestFocus();
+    } on PlatformException catch (e) {
+      _addLine('Ошибка: ${e.message}', LineType.error);
+      _addLine('Убедитесь что на устройстве запущен: adb tcpip 5555', LineType.info);
     } finally {
       setState(() => _busy = false);
     }
@@ -139,77 +128,51 @@ class _TerminalScreenState extends State<TerminalScreen> {
   Future<void> _disconnect() async {
     if (_busy) return;
     setState(() => _busy = true);
-    _addLine('adb disconnect', LineType.command);
 
     try {
-      final out = await _channel.invokeMethod<String>('execute', {
-        'args': ['disconnect'],
-      });
-      _addLine(out ?? '', LineType.output);
+      final out = await _channel.invokeMethod<String>('disconnect');
+      _addLine(out ?? 'Отключено', LineType.info);
       setState(() {
         _connected = false;
         _device = '';
       });
-    } catch (e) {
-      _addLine('$e', LineType.error);
+    } on PlatformException catch (e) {
+      _addLine('Ошибка: ${e.message}', LineType.error);
     } finally {
       setState(() => _busy = false);
     }
   }
 
-  Future<void> _run(String command) async {
-    final cmd = command.trim();
-    if (cmd.isEmpty || _busy || _adbPath == null) return;
+  Future<void> _run(String input) async {
+    final cmd = input.trim();
+    if (cmd.isEmpty || _busy) return;
+    if (!_connected) {
+      _addLine('Нет подключения. Сначала подключитесь к устройству.', LineType.error);
+      return;
+    }
 
     _cmdCtrl.clear();
     _history.insert(0, cmd);
-    if (_history.length > 50) _history.removeLast();
+    if (_history.length > 100) _history.removeLast();
     _historyIndex = -1;
 
     setState(() => _busy = true);
-    _addLine('adb $cmd', LineType.command);
+    _addLine('\$ $cmd', LineType.command);
+
+    // Strip "shell " prefix if user typed it — dadb.shell() handles the shell
+    final shellCmd = cmd.startsWith('shell ') ? cmd.substring(6) : cmd;
 
     try {
-      final parts = _split(cmd);
-      final noDevice = {'connect', 'disconnect', 'devices', 'kill-server', 'start-server'};
-      final args = (_device.isNotEmpty && !noDevice.contains(parts.first))
-          ? ['-s', _device, ...parts]
-          : parts;
-
-      final out = await _channel.invokeMethod<String>('execute', {'args': args});
+      final out = await _channel.invokeMethod<String>('execute', {
+        'command': shellCmd,
+      });
       _addLine(out ?? '(нет вывода)', LineType.output);
-    } catch (e) {
-      _addLine('$e', LineType.error);
+    } on PlatformException catch (e) {
+      _addLine('Ошибка: ${e.message}', LineType.error);
     } finally {
       setState(() => _busy = false);
       _cmdFocus.requestFocus();
     }
-  }
-
-  List<String> _split(String cmd) {
-    final parts = <String>[];
-    final buf = StringBuffer();
-    String? quote;
-    for (final ch in cmd.split('')) {
-      if (quote != null) {
-        if (ch == quote) {
-          quote = null;
-        } else {
-          buf.write(ch);
-        }
-      } else if (ch == '"' || ch == "'") {
-        quote = ch;
-      } else if (ch == ' ') {
-        if (buf.isNotEmpty) {
-          parts.add(buf.toString());
-          buf.clear();
-        }
-      } else {
-        buf.write(ch);
-      }
-    }
-    if (buf.isNotEmpty) parts.add(buf.toString());
-    return parts;
   }
 
   void _historyUp() {
@@ -231,17 +194,36 @@ class _TerminalScreenState extends State<TerminalScreen> {
     _cmdCtrl.selection = TextSelection.collapsed(offset: _cmdCtrl.text.length);
   }
 
-  Color _lineColor(LineType t) {
-    switch (t) {
-      case LineType.command:
-        return const Color(0xFF4EC9B0);
-      case LineType.error:
-        return const Color(0xFFF44747);
-      case LineType.info:
-        return const Color(0xFF808080);
-      case LineType.output:
-        return const Color(0xFFD4D4D4);
-    }
+  Color _lineColor(LineType t) => switch (t) {
+        LineType.command => const Color(0xFF4EC9B0),
+        LineType.error => const Color(0xFFF44747),
+        LineType.info => const Color(0xFF808080),
+        LineType.output => const Color(0xFFD4D4D4),
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF323233),
+        title: const Text('ADB Terminal', style: TextStyle(fontFamily: 'monospace', fontSize: 16)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete_sweep, size: 20),
+            tooltip: 'Очистить',
+            onPressed: () => setState(() => _lines.clear()),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _buildConnectionBar(),
+          _buildQuickButtons(),
+          _buildTerminal(),
+          _buildInputBar(),
+        ],
+      ),
+    );
   }
 
   Widget _buildConnectionBar() {
@@ -259,33 +241,30 @@ class _TerminalScreenState extends State<TerminalScreen> {
                   style: const TextStyle(fontSize: 14),
                   decoration: const InputDecoration(labelText: 'IP адрес'),
                   keyboardType: TextInputType.number,
+                  enabled: !_connected && !_busy,
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
-                flex: 1,
                 child: TextField(
                   controller: _portCtrl,
                   style: const TextStyle(fontSize: 14),
                   decoration: const InputDecoration(labelText: 'Порт'),
                   keyboardType: TextInputType.number,
+                  enabled: !_connected && !_busy,
                 ),
               ),
               const SizedBox(width: 8),
               _connected
                   ? ElevatedButton(
                       onPressed: _busy ? null : _disconnect,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF8B0000),
-                      ),
-                      child: const Text('Отключить'),
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B0000)),
+                      child: const Text('Откл.'),
                     )
                   : ElevatedButton(
-                      onPressed: (_busy || _adbPath == null) ? null : _connect,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF007ACC),
-                      ),
-                      child: const Text('Подключить'),
+                      onPressed: _busy ? null : _connect,
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF007ACC)),
+                      child: const Text('Подкл.'),
                     ),
             ],
           ),
@@ -325,12 +304,14 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
   Widget _buildQuickButtons() {
     final cmds = [
-      ('devices', 'devices'),
-      ('shell pwd', 'shell pwd'),
-      ('shell ls /sdcard', 'shell ls /sdcard'),
-      ('shell getprop ro.product.model', 'model'),
+      ('ls /sdcard', 'ls /sdcard'),
+      ('pwd', 'pwd'),
+      ('id', 'id'),
+      ('getprop ro.product.model', 'model'),
+      ('df -h', 'df -h'),
       ('logcat -d -t 50', 'logcat'),
-      ('shell df -h', 'df'),
+      ('ps -A | head -20', 'ps'),
+      ('ip addr', 'ip addr'),
     ];
     return Container(
       color: const Color(0xFF252526),
@@ -342,9 +323,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
           return Padding(
             padding: const EdgeInsets.only(right: 6),
             child: OutlinedButton(
-              onPressed: (_busy || _adbPath == null) ? null : () => _run(e.$1),
+              onPressed: (_busy || !_connected) ? null : () => _run(e.$1),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 side: const BorderSide(color: Color(0xFF555555)),
@@ -360,25 +341,22 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
   Widget _buildTerminal() {
     return Expanded(
-      child: Container(
-        color: const Color(0xFF1E1E1E),
-        child: ListView.builder(
-          controller: _scrollCtrl,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          itemCount: _lines.length,
-          itemBuilder: (_, i) {
-            final line = _lines[i];
-            return Text(
-              line.type == LineType.command ? '▶ ${line.text}' : line.text,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12.5,
-                height: 1.4,
-                color: _lineColor(line.type),
-              ),
-            );
-          },
-        ),
+      child: ListView.builder(
+        controller: _scrollCtrl,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        itemCount: _lines.length,
+        itemBuilder: (_, i) {
+          final line = _lines[i];
+          return Text(
+            line.text,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12.5,
+              height: 1.4,
+              color: _lineColor(line.type),
+            ),
+          );
+        },
       ),
     );
   }
@@ -389,12 +367,12 @@ class _TerminalScreenState extends State<TerminalScreen> {
       padding: const EdgeInsets.all(8),
       child: Row(
         children: [
-          const Text(
-            'adb ',
+          Text(
+            _connected ? '\$ ' : '> ',
             style: TextStyle(
               fontFamily: 'monospace',
-              fontSize: 13,
-              color: Color(0xFF4EC9B0),
+              fontSize: 14,
+              color: _connected ? const Color(0xFF4EC9B0) : const Color(0xFF808080),
             ),
           ),
           Expanded(
@@ -411,7 +389,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 focusNode: _cmdFocus,
                 style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                 decoration: const InputDecoration(
-                  hintText: 'shell ls  /  connect ip:port  /  devices',
+                  hintText: 'ls /sdcard  /  getprop  /  logcat -d',
                   hintStyle: TextStyle(color: Color(0xFF555555)),
                 ),
                 onSubmitted: _run,
@@ -424,37 +402,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
           const SizedBox(width: 8),
           IconButton(
             icon: const Icon(Icons.send, size: 20),
-            onPressed: (_busy || _adbPath == null) ? null : () => _run(_cmdCtrl.text),
+            onPressed: (_busy || !_connected) ? null : () => _run(_cmdCtrl.text),
             color: const Color(0xFF4EC9B0),
           ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF323233),
-        title: const Text(
-          'ADB Terminal',
-          style: TextStyle(fontFamily: 'monospace', fontSize: 16),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_sweep, size: 20),
-            tooltip: 'Очистить',
-            onPressed: () => setState(() => _lines.clear()),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildConnectionBar(),
-          _buildQuickButtons(),
-          _buildTerminal(),
-          _buildInputBar(),
         ],
       ),
     );

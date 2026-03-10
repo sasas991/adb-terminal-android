@@ -1,19 +1,20 @@
 package com.example.adb_terminal_android
 
-import android.os.Build
+import dadb.AdbKeyPair
+import dadb.Dadb
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
 
     companion object {
         const val CHANNEL = "adb_terminal"
-        const val ADB_PORT = "15037"
-        const val TIMEOUT_SECONDS = 30L
     }
+
+    private var dadb: Dadb? = null
+    private var keyPair: AdbKeyPair? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -21,26 +22,61 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "getAdbPath" -> {
-                        val path = getAdbPath()
-                        if (path != null) result.success(path)
-                        else result.error("NOT_FOUND", "ADB binary not found in nativeLibraryDir", null)
+
+                    "connect" -> {
+                        val host = call.argument<String>("host") ?: run {
+                            result.error("INVALID_ARGS", "host required", null)
+                            return@setMethodCallHandler
+                        }
+                        val port = call.argument<Int>("port") ?: 5555
+                        Thread {
+                            try {
+                                dadb?.close()
+                                dadb = null
+                                val kp = getOrCreateKeyPair()
+                                dadb = Dadb.create(host, port, kp)
+                                runOnUiThread { result.success("Подключено к $host:$port") }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("CONNECT_ERROR", e.message ?: "Connection failed", null)
+                                }
+                            }
+                        }.start()
                     }
 
                     "execute" -> {
-                        val args = call.argument<List<String>>("args")
-                        if (args == null) {
-                            result.error("INVALID_ARGS", "args is required", null)
+                        val command = call.argument<String>("command") ?: run {
+                            result.error("INVALID_ARGS", "command required", null)
+                            return@setMethodCallHandler
+                        }
+                        val d = dadb ?: run {
+                            result.error("NOT_CONNECTED", "Нет подключения к устройству", null)
                             return@setMethodCallHandler
                         }
                         Thread {
                             try {
-                                val output = executeAdb(args)
-                                runOnUiThread { result.success(output) }
+                                val response = d.shell(command)
+                                val out = buildString {
+                                    if (response.output.isNotEmpty()) append(response.output)
+                                    if (response.errorOutput.isNotEmpty()) append(response.errorOutput)
+                                }
+                                runOnUiThread { result.success(out.trimEnd().ifEmpty { "(нет вывода)" }) }
                             } catch (e: Exception) {
-                                runOnUiThread { result.error("EXEC_ERROR", e.message, null) }
+                                runOnUiThread {
+                                    result.error("EXEC_ERROR", e.message ?: "Execution failed", null)
+                                }
                             }
                         }.start()
+                    }
+
+                    "disconnect" -> {
+                        try {
+                            dadb?.close()
+                            dadb = null
+                            result.success("Отключено")
+                        } catch (e: Exception) {
+                            result.error("DISCONNECT_ERROR", e.message, null)
+                        }
                     }
 
                     else -> result.notImplemented()
@@ -48,52 +84,15 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    private fun getAdbPath(): String? {
-        val path = "${applicationInfo.nativeLibraryDir}/libadb.so"
-        return if (File(path).exists()) path else null
-    }
-
-    private fun executeAdb(args: List<String>): String {
-        val adbPath = getAdbPath() ?: throw Exception("ADB binary not found")
-
-        val cmd = listOf(adbPath) + args
-        val pb = ProcessBuilder(cmd).apply {
-            redirectErrorStream(true)
-            environment().apply {
-                put("ANDROID_ADB_SERVER_PORT", ADB_PORT)
-                put("HOME", filesDir.absolutePath)
-                put("TMPDIR", cacheDir.absolutePath)
-            }
-        }
-
-        val process = pb.start()
-        // Close stdin so interactive commands don't hang
-        process.outputStream.close()
-
-        var output = ""
-        val readerThread = Thread {
-            output = process.inputStream.bufferedReader().readText()
-        }
-        readerThread.start()
-
-        val finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        if (!finished) {
-            process.destroyForcibly()
-            readerThread.join(2000)
-            return output.ifEmpty { "(timeout after ${TIMEOUT_SECONDS}s)" }
-        }
-        readerThread.join(2000)
-        return output.ifEmpty { "(no output)" }
+    private fun getOrCreateKeyPair(): AdbKeyPair {
+        keyPair?.let { return it }
+        val kp = AdbKeyPair.generate()
+        keyPair = kp
+        return kp
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            val path = getAdbPath() ?: return
-            ProcessBuilder(path, "kill-server").apply {
-                environment()["ANDROID_ADB_SERVER_PORT"] = ADB_PORT
-                environment()["HOME"] = filesDir.absolutePath
-            }.start().waitFor(3, TimeUnit.SECONDS)
-        } catch (_: Exception) {}
+        try { dadb?.close() } catch (_: Exception) {}
     }
 }
