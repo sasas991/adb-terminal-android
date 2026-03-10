@@ -66,8 +66,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void initState() {
     super.initState();
-    _addLine('ADB Terminal готов. Введите IP и нажмите "Подключить".', LineType.info);
-    _addLine('На целевом устройстве должен быть включён ADB по Wi-Fi (порт 5555).', LineType.info);
+    _addLine('Enter the target device IP and tap Connect.', LineType.info);
+    _addLine('Make sure ADB over Wi-Fi is enabled on the target device (adb tcpip 5555).', LineType.info);
   }
 
   @override
@@ -104,7 +104,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
     if (host.isEmpty) return;
 
     setState(() => _busy = true);
-    _addLine('Подключение к $host:$port...', LineType.info);
+    _addLine('Connecting to $host:$port...', LineType.info);
 
     try {
       final out = await _channel.invokeMethod<String>('connect', {
@@ -118,8 +118,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
       });
       _cmdFocus.requestFocus();
     } on PlatformException catch (e) {
-      _addLine('Ошибка: ${e.message}', LineType.error);
-      _addLine('Убедитесь что на устройстве запущен: adb tcpip 5555', LineType.info);
+      _addLine('Error: ${e.message}', LineType.error);
+      _addLine('Make sure the target device is running: adb tcpip 5555', LineType.info);
     } finally {
       setState(() => _busy = false);
     }
@@ -131,13 +131,13 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
     try {
       final out = await _channel.invokeMethod<String>('disconnect');
-      _addLine(out ?? 'Отключено', LineType.info);
+      _addLine(out ?? 'Disconnected', LineType.info);
       setState(() {
         _connected = false;
         _device = '';
       });
     } on PlatformException catch (e) {
-      _addLine('Ошибка: ${e.message}', LineType.error);
+      _addLine('Error: ${e.message}', LineType.error);
     } finally {
       setState(() => _busy = false);
     }
@@ -147,7 +147,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
     final cmd = input.trim();
     if (cmd.isEmpty || _busy) return;
     if (!_connected) {
-      _addLine('Нет подключения. Сначала подключитесь к устройству.', LineType.error);
+      _addLine('Not connected. Connect to a device first.', LineType.error);
       return;
     }
 
@@ -166,9 +166,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
       final out = await _channel.invokeMethod<String>('execute', {
         'command': shellCmd,
       });
-      _addLine(out ?? '(нет вывода)', LineType.output);
+      _addLine(out ?? '(no output)', LineType.output);
     } on PlatformException catch (e) {
-      _addLine('Ошибка: ${e.message}', LineType.error);
+      _addLine('Error: ${e.message}', LineType.error);
     } finally {
       setState(() => _busy = false);
       _cmdFocus.requestFocus();
@@ -210,7 +210,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.delete_sweep, size: 20),
-            tooltip: 'Очистить',
+            tooltip: 'Clear',
             onPressed: () => setState(() => _lines.clear()),
           ),
         ],
@@ -239,7 +239,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 child: TextField(
                   controller: _hostCtrl,
                   style: const TextStyle(fontSize: 14),
-                  decoration: const InputDecoration(labelText: 'IP адрес'),
+                  decoration: const InputDecoration(labelText: 'IP address'),
                   keyboardType: TextInputType.number,
                   enabled: !_connected && !_busy,
                 ),
@@ -249,7 +249,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 child: TextField(
                   controller: _portCtrl,
                   style: const TextStyle(fontSize: 14),
-                  decoration: const InputDecoration(labelText: 'Порт'),
+                  decoration: const InputDecoration(labelText: 'Port'),
                   keyboardType: TextInputType.number,
                   enabled: !_connected && !_busy,
                 ),
@@ -259,12 +259,12 @@ class _TerminalScreenState extends State<TerminalScreen> {
                   ? ElevatedButton(
                       onPressed: _busy ? null : _disconnect,
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B0000)),
-                      child: const Text('Откл.'),
+                      child: const Text('Disconnect'),
                     )
                   : ElevatedButton(
                       onPressed: _busy ? null : _connect,
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF007ACC)),
-                      child: const Text('Подкл.'),
+                      child: const Text('Connect'),
                     ),
             ],
           ),
@@ -281,7 +281,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
               ),
               const SizedBox(width: 6),
               Text(
-                _connected ? 'Подключено: $_device' : 'Не подключено',
+                _connected ? 'Connected: $_device' : 'Not connected',
                 style: TextStyle(
                   fontSize: 12,
                   color: _connected ? Colors.green[300] : Colors.red[300],

@@ -30,10 +30,10 @@ class MainActivity : FlutterActivity() {
                             try {
                                 adb.close()
                                 adb.connect(host, port)
-                                runOnUiThread { result.success("Подключено к $host:$port") }
+                                runOnUiThread { result.success("Connected to $host:$port") }
                             } catch (e: Exception) {
                                 runOnUiThread {
-                                    result.error("CONNECT_ERROR", e.message ?: "Ошибка подключения", null)
+                                    result.error("CONNECT_ERROR", e.message ?: "Connection failed", null)
                                 }
                             }
                         }.start()
@@ -46,7 +46,7 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         if (!adb.isConnected()) {
-                            result.error("NOT_CONNECTED", "Нет подключения к устройству", null)
+                            result.error("NOT_CONNECTED", "Not connected to a device", null)
                             return@setMethodCallHandler
                         }
                         Thread {
@@ -55,7 +55,7 @@ class MainActivity : FlutterActivity() {
                                 runOnUiThread { result.success(output) }
                             } catch (e: Exception) {
                                 runOnUiThread {
-                                    result.error("EXEC_ERROR", e.message ?: "Ошибка выполнения", null)
+                                    result.error("EXEC_ERROR", e.message ?: "Execution failed", null)
                                 }
                             }
                         }.start()
@@ -63,7 +63,7 @@ class MainActivity : FlutterActivity() {
 
                     "disconnect" -> {
                         adb.close()
-                        result.success("Отключено")
+                        result.success("Disconnected")
                     }
 
                     else -> result.notImplemented()

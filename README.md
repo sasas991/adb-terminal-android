@@ -4,6 +4,8 @@ Android app that connects to remote Android devices over ADB/TCP and runs shell 
 
 Implements the ADB wire protocol natively in Kotlin using Android KeyStore for persistent RSA auth.
 
+![image](screenshot.png)
+
 ## Requirements
 
 - Android 6.0+ (API 23) on both devices

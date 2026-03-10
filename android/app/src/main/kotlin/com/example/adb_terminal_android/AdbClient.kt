@@ -156,7 +156,7 @@ class AdbClient {
             }
         }
 
-        return sb.toString().trimEnd().ifEmpty { "(нет вывода)" }
+        return sb.toString().trimEnd().ifEmpty { "(no output)" }
     }
 
     fun close() {
