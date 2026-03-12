@@ -166,6 +166,8 @@ class AdbClient {
 
     fun isConnected() = socket?.isConnected == true && socket?.isClosed == false
 
+    fun adbPublicKeyBytes(): ByteArray = encodePublicKey()
+
     // ── ADB wire protocol ────────────────────────────────────────────────────
 
     private data class Msg(val command: Int, val arg0: Int, val arg1: Int, val data: ByteArray)

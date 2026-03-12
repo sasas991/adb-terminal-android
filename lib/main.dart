@@ -97,6 +97,86 @@ class _TerminalScreenState extends State<TerminalScreen> {
     });
   }
 
+  Future<void> _pair() async {
+    final pairPortCtrl = TextEditingController();
+    final pairCodeCtrl = TextEditingController();
+    final pairHostCtrl = TextEditingController(text: _hostCtrl.text.trim());
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF252526),
+        title: const Text('Pair Device', style: TextStyle(fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'On the target device, go to:\nDeveloper options → Wireless debugging → Pair device with pairing code',
+              style: TextStyle(fontSize: 12, color: Color(0xFF808080)),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pairHostCtrl,
+              decoration: const InputDecoration(labelText: 'IP address'),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: pairPortCtrl,
+              decoration: const InputDecoration(labelText: 'Pairing port (shown on device)'),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: pairCodeCtrl,
+              decoration: const InputDecoration(labelText: '6-digit pairing code'),
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF007ACC)),
+            child: const Text('Pair'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final host = pairHostCtrl.text.trim();
+    final port = int.tryParse(pairPortCtrl.text.trim());
+    final code = pairCodeCtrl.text.trim();
+
+    if (host.isEmpty || port == null || code.length != 6) {
+      _addLine('Pairing error: invalid host, port, or code.', LineType.error);
+      return;
+    }
+
+    setState(() => _busy = true);
+    _addLine('Pairing with $host:$port...', LineType.info);
+
+    try {
+      final out = await _channel.invokeMethod<String>('pair', {
+        'host': host,
+        'port': port,
+        'code': code,
+      });
+      _addLine(out ?? 'Paired.', LineType.output);
+    } on PlatformException catch (e) {
+      _addLine('Pairing error: ${e.message}', LineType.error);
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
   Future<void> _connect() async {
     if (_busy) return;
     final host = _hostCtrl.text.trim();
@@ -208,6 +288,11 @@ class _TerminalScreenState extends State<TerminalScreen> {
         backgroundColor: const Color(0xFF323233),
         title: const Text('ADB Terminal', style: TextStyle(fontFamily: 'monospace', fontSize: 16)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.link, size: 20),
+            tooltip: 'Pair device (Android 11+)',
+            onPressed: _busy ? null : _pair,
+          ),
           IconButton(
             icon: const Icon(Icons.delete_sweep, size: 20),
             tooltip: 'Clear',

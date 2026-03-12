@@ -61,6 +61,26 @@ class MainActivity : FlutterActivity() {
                         }.start()
                     }
 
+                    "pair" -> {
+                        val host = call.argument<String>("host")
+                        val port = call.argument<Int>("port")
+                        val code = call.argument<String>("code")
+                        if (host.isNullOrBlank() || port == null || code.isNullOrBlank()) {
+                            result.error("INVALID_ARGS", "host, port and code required", null)
+                            return@setMethodCallHandler
+                        }
+                        Thread {
+                            try {
+                                val msg = AdbPairingClient(adb.adbPublicKeyBytes()).pair(host, port, code)
+                                runOnUiThread { result.success(msg) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("PAIR_ERROR", e.message ?: "Pairing failed", null)
+                                }
+                            }
+                        }.start()
+                    }
+
                     "disconnect" -> {
                         adb.close()
                         result.success("Disconnected")
