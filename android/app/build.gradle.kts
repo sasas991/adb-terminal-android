@@ -43,3 +43,7 @@ flutter {
     source = "../.."
 }
 
+dependencies {
+    implementation("org.conscrypt:conscrypt-android:2.5.2")
+}
+
