@@ -178,8 +178,8 @@ class AdbPairingClient(private val adbKeyBytes: ByteArray) {
         val p = oid.split(".").map { it.toLong() }
         val out = mutableListOf((p[0] * 40 + p[1]).toByte())
         for (i in 2 until p.size) {
-            var v = p[i]; val chunk = mutableListOf((v and 0x7F).toByte()); v = v shr 7
-            while (v > 0) { chunk.add((0x80 or (v and 0x7F)).toByte()); v = v shr 7 }
+            var v = p[i].toInt(); val chunk = mutableListOf((v and 0x7F).toByte()); v = v ushr 7
+            while (v > 0) { chunk.add((0x80 or (v and 0x7F)).toByte()); v = v ushr 7 }
             out.addAll(chunk.reversed())
         }
         return derTlv(0x06, out.toByteArray())
