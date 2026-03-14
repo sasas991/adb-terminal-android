@@ -261,29 +261,46 @@ class AdbPairingClient(private val adbKeyBytes: ByteArray) {
             // SPAKE2 password = code_utf8 + exported_key_material
             val password = code.toByteArray(Charsets.UTF_8) + exportedKey
 
-            // w = password interpreted as big-endian integer mod N
-            val w = BigInteger(1, MessageDigest.getInstance("SHA-256").digest(password)).mod(N)
+            // BoringSSL derives w as: first 32 bytes of SHA512(password), reduced mod N
+            val wBytes = MessageDigest.getInstance("SHA-512").digest(password).copyOf(32)
+            val w = BigInteger(1, wBytes).mod(N)
 
             // Ephemeral scalar x
             var x: BigInteger
             do { x = BigInteger(N.bitLength(), SecureRandom()) } while (x.signum() == 0 || x >= N)
 
-            // X = x·G + w·M  (our SPAKE2 public value)
-            val X = ecAdd(ecMul(x, G), ecMul(w, M_PT))
-            writePacket(out, 0, compress(X))
+            // X = x·G + w·M (alice/client)  — sent as 65-byte uncompressed point (BoringSSL format)
+            val X   = ecAdd(ecMul(x, G), ecMul(w, M_PT))
+            val X65 = byteArrayOf(0x04) + to32(X.x) + to32(X.y)
+            writePacket(out, 0, X65)
 
-            // Receive server's Y = y·G + w·N
-            val (typeY, payloadY) = readPacket(inp)
+            // Receive server's Y (65-byte uncompressed point)
+            val (typeY, Y65) = readPacket(inp)
             check(typeY == 0) { "Expected SPAKE2 message (type 0), got $typeY" }
-            val Y = decompress(payloadY)
+            check(Y65.size == 65 && Y65[0] == 0x04.toByte()) {
+                "Expected 65-byte uncompressed point, got ${Y65.size} bytes"
+            }
+            val Y = ECPt(BigInteger(1, Y65.copyOfRange(1, 33)), BigInteger(1, Y65.copyOfRange(33, 65)))
 
             // Shared secret K = x · (Y − w·N_PT)
-            val K  = ecMul(x, ecAdd(Y, ecMul(w, N_PT).neg()))
-            val Kx = to32(K.x)
+            val K   = ecMul(x, ecAdd(Y, ecMul(w, N_PT).neg()))
+            val K65 = byteArrayOf(0x04) + to32(K.x) + to32(K.y)
 
-            // Derive session key: HKDF(ikm=Kx, salt="", info=label, len=44)
+            // BoringSSL SPAKE2 transcript key derivation:
+            // SHA512( len64le(aliceId) || aliceId || len64le(bobId) || bobId ||
+            //         len64le(X65)    || X65      || len64le(Y65)   || Y65   ||
+            //         len64le(K65)    || K65      || len64le(wBytes)|| wBytes )
+            fun u64le(n: Long) = ByteArray(8) { i -> ((n ushr (8 * i)) and 0xFF).toByte() }
+            fun lp(d: ByteArray) = u64le(d.size.toLong()) + d
+            val aliceId = "adb pair client".toByteArray(Charsets.UTF_8)
+            val bobId   = "adb pair server".toByteArray(Charsets.UTF_8)
+            val transcript = lp(aliceId) + lp(bobId) +
+                lp(X65) + lp(Y65) + lp(K65) + lp(wBytes)
+            val spake2Key = MessageDigest.getInstance("SHA-512").digest(transcript) // 64 bytes
+
+            // Derive AES-256-GCM session key: HKDF(ikm=spake2Key, salt="", info=label, len=44)
             val info   = "adb pairing_auth aes-256-gcm key".toByteArray(Charsets.UTF_8)
-            val keyMat = hkdf(ikm = Kx, salt = byteArrayOf(), info = info, len = 44)
+            val keyMat = hkdf(ikm = spake2Key, salt = byteArrayOf(), info = info, len = 44)
             val aesKey = keyMat.copyOf(32)
             val iv     = keyMat.copyOfRange(32, 44)
 
@@ -293,7 +310,7 @@ class AdbPairingClient(private val adbKeyBytes: ByteArray) {
             // Receive and verify server PeerInfo
             val (typePI, encPI) = readPacket(inp)
             check(typePI == 1) { "Expected PeerInfo (type 1), got $typePI" }
-            aesGcmDecrypt(aesKey, iv, encPI) // throws AEADBadTagException if wrong
+            aesGcmDecrypt(aesKey, iv, encPI) // throws AEADBadTagException on key mismatch
 
             return "Paired successfully."
         }
