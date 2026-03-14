@@ -1,13 +1,12 @@
 package com.example.adb_terminal_android
 
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import org.conscrypt.Conscrypt
 import java.io.DataInputStream
 import java.io.OutputStream
 import java.math.BigInteger
 import java.net.Socket
 import java.security.*
+import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import javax.crypto.Cipher
@@ -160,6 +159,53 @@ class AdbPairingClient(private val adbKeyBytes: ByteArray) {
         return type to payload
     }
 
+    // ── DER helpers (for self-signed cert) ───────────────────────────────────
+
+    private fun derLen(n: Int) = when {
+        n < 128  -> byteArrayOf(n.toByte())
+        n < 256  -> byteArrayOf(0x81.toByte(), n.toByte())
+        else     -> byteArrayOf(0x82.toByte(), (n shr 8).toByte(), n.toByte())
+    }
+    private fun derTlv(tag: Int, v: ByteArray) = byteArrayOf(tag.toByte()) + derLen(v.size) + v
+    private fun derSeq(v: ByteArray)  = derTlv(0x30, v)
+    private fun derSet(v: ByteArray)  = derTlv(0x31, v)
+    private fun derInt(n: Int)        = derTlv(0x02, if (n < 128) byteArrayOf(n.toByte()) else byteArrayOf(0, n.toByte()))
+    private fun derUtc(s: String)     = derTlv(0x17, s.toByteArray(Charsets.US_ASCII))
+    private fun derUtf8(s: String)    = derTlv(0x0C, s.toByteArray())
+    private fun derBits(v: ByteArray) = derTlv(0x03, byteArrayOf(0) + v)
+    private fun derExplicit(tag: Int, v: ByteArray) = derTlv(0xA0 or tag, v)
+    private fun derOid(oid: String): ByteArray {
+        val p = oid.split(".").map { it.toLong() }
+        val out = mutableListOf((p[0] * 40 + p[1]).toByte())
+        for (i in 2 until p.size) {
+            var v = p[i]; val chunk = mutableListOf((v and 0x7F).toByte()); v = v shr 7
+            while (v > 0) { chunk.add((0x80 or (v and 0x7F)).toByte()); v = v shr 7 }
+            out.addAll(chunk.reversed())
+        }
+        return derTlv(0x06, out.toByteArray())
+    }
+
+    /** Build a minimal self-signed EC (P-256) X.509 v3 certificate from an in-memory key pair. */
+    private fun buildSelfSignedCert(kp: KeyPair): X509Certificate {
+        val algId  = derSeq(derOid("1.2.840.10045.4.3.2"))       // ecdsa-with-SHA256
+        val rdnSeq = derSeq(derSet(derSeq(derOid("2.5.4.3") + derUtf8("AdbPairing"))))
+        val tbs = derSeq(
+            derExplicit(0, derInt(2)) +           // version v3
+            derInt(1) +                            // serialNumber
+            algId +                                // signature algorithm
+            rdnSeq +                               // issuer
+            derSeq(derUtc("700101000000Z") + derUtc("491231235959Z")) +  // validity
+            rdnSeq +                               // subject
+            kp.public.encoded                      // subjectPublicKeyInfo (already DER)
+        )
+        val sigBytes = Signature.getInstance("SHA256withECDSA").run {
+            initSign(kp.private); update(tbs); sign()
+        }
+        val certDer = derSeq(tbs + algId + derBits(sigBytes))
+        return CertificateFactory.getInstance("X.509")
+            .generateCertificate(certDer.inputStream()) as X509Certificate
+    }
+
     // ── TLS setup ────────────────────────────────────────────────────────────
 
     private fun buildSslContext(): SSLContext {
@@ -167,21 +213,20 @@ class AdbPairingClient(private val adbKeyBytes: ByteArray) {
             Security.insertProviderAt(Conscrypt.newProvider(), 1)
         }
 
-        // Android KeyStore generates the key AND a self-signed certificate automatically
-        val alias = "adb_pairing_tls"
-        val ks    = KeyStore.getInstance("AndroidKeyStore").also { it.load(null) }
-        if (!ks.containsAlias(alias)) {
-            val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
-                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                .setDigests(KeyProperties.DIGEST_SHA256)
-                .build()
-            KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
-                .also { it.initialize(spec) }.generateKeyPair()
-        }
+        // Ephemeral in-memory key pair — NOT Android KeyStore, so Conscrypt can use
+        // the raw key material for TLS signing
+        val kpg = KeyPairGenerator.getInstance("EC")
+        kpg.initialize(ECGenParameterSpec("secp256r1"), SecureRandom())
+        val kp = kpg.generateKeyPair()
 
-        // KeyManagerFactory that works with AndroidKeyStore
-        val kmf = KeyManagerFactory.getInstance("AndroidKeyStore")
-        kmf.init(null) // uses all AndroidKeyStore entries
+        val cert = buildSelfSignedCert(kp)
+
+        val ks = KeyStore.getInstance("PKCS12")
+        ks.load(null)
+        ks.setKeyEntry("pairing", kp.private, CharArray(0), arrayOf(cert))
+
+        val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+        kmf.init(ks, CharArray(0))
 
         val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
