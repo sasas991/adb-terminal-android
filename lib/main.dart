@@ -115,16 +115,25 @@ class _TerminalScreenState extends State<TerminalScreen> {
               style: TextStyle(fontSize: 12, color: Color(0xFF808080)),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: pairHostCtrl,
-              decoration: const InputDecoration(labelText: 'IP address'),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: pairPortCtrl,
-              decoration: const InputDecoration(labelText: 'Pairing port (shown on device)'),
-              keyboardType: TextInputType.number,
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: TextField(
+                    controller: pairHostCtrl,
+                    decoration: const InputDecoration(labelText: 'IP address'),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: pairPortCtrl,
+                    decoration: const InputDecoration(labelText: 'Port'),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             TextField(
@@ -330,7 +339,8 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              Expanded(
+              SizedBox(
+                width: 80,
                 child: TextField(
                   controller: _portCtrl,
                   style: const TextStyle(fontSize: 14),
